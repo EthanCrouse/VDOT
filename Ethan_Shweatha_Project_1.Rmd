@@ -1,0 +1,980 @@
+---
+title: "Project 1"
+author: "Ethan Crouse and Shweatha Rameshkumar"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+  output:
+  html_document:
+    self_contained: yes
+---
+
+```{r setup, include=FALSE}
+
+library(highcharter)
+library(dplyr)
+library(viridisLite)
+library(forecast)
+library(treemap)
+library(arules)
+library(flexdashboard)
+library(knitr)
+library(MASS)
+library(glmnet)
+library(FNN)
+library(gmodels)
+library(ggplot2)
+library(latex2exp)
+library(boot)
+library(plotly)
+library(car)
+library(caret)
+library(e1071)
+library(kableExtra)
+library(pROC)
+library(GGally)
+library(tidyverse)
+library(tidyr)
+library(ggcorrplot)
+library(pROC)
+library(car)
+
+set.seed(123)
+setwd("/Users/edcro/Desktop/School/Semesters/Fall 24/CMDA 4654/Project 1")
+
+thm <- 
+  hc_theme(
+    colors = c("#224af8", "#000000", "#90ed7d"),
+    chart = list(
+      backgroundColor = "transparent",
+      style = list(fontFamily = "Source Sans Pro")
+    ),
+    xAxis = list(
+      gridLineWidth = 1
+    )
+  )
+
+knitr::opts_chunk$set(echo = TRUE, 
+                      comment = NA, # Required
+                      fig.path = "./figures/",  # Store all figures here in relative path (make the folder first)
+                      fig.align = "center",
+                      fig.width = 7,
+                      fig.height = 7,
+                      message = FALSE, # Turn off load messages
+                      warning = FALSE # Turn off warnings
+                      )
+
+```
+
+```{r, include = FALSE}
+data = read.csv("data.csv")
+
+#remove entries with NA so we only look at medications that were for sale across all years
+data = data %>% na.omit()
+
+#narrow data down to medication across all manufactures
+data = data[data$Mftr_Name == "Overall", ]
+
+#make variables for totals across all years
+data$Avg_Spnd_Per_Clm_ALL_YEARS = rowMeans(data[, grep("Avg_Spnd_Per_Clm_", names(data))])
+data$Avg_Spnd_Per_Dsg_Unt_Wghtd_ALL_YEARS = rowMeans(data[, grep("Avg_Spnd_Per_Dsg_Unt_Wghtd", names(data))])
+data$Tot_Spndng_ALL_YEARS = rowSums(data[, grep("Tot_Spndng", names(data))])
+data$Tot_Clms_ALL_YEARS = rowSums(data[, grep("Tot_Clms", names(data))])
+data$Tot_Dsg_Unts_ALL_YEARS = rowSums(data[, grep("Tot_Dsg_Unts", names(data))])
+
+#remove variable for outlier_flag
+data = data[, -grep("Outlier_Flag", names(data))]
+data$Multiple_Mftr <- ifelse(data$Tot_Mftr > 1, 1, 0)
+```
+
+```{r, echo = FALSE}
+
+#list of US based phramaceutical companies (Wikipedia list)
+us_companies <- c(
+"Abbott Laboratories", "AbbVie Inc.", "Acorda Therapeutics", "Advaxis", "Alcon", "Alexion", "Alnylam", "Amgen",
+"Amneal Pharmaceuticals", "Avax Technologies", "Baxter", "BioCryst", "Biogen", "Bioverativ", "Biovest", "Biovista","Bristol Myers Squibb", "Century", "Ceragenix", "Combe", "CytoSport", "CytRx", "Danco Laboratories", "Eli Lilly", "Galena Biopharma", "Genentech", "Gilead Sciences", "Ionis", "Institute for OneWorld Health", "Intercept","Johnson & Johnson", "Ethicon", "Janssen Biotech", "McNeil Consumer Healthcare", "Ortho-McNeil", "Kinetic Concepts","McKesson", "Melinta Therapeutics", "Melior Discovery", "Mentholatum", "Merck & Co.", "Merrimack Pharmaceuticals","Myriad Genetics", "Moderna", "Northwest Biotherapeutics", "Norwich Pharma", "NovaBay", "Organon", "Ovation", "Pfizer","Hospira", "Searle", "Pharmaceutical Product Development", "Prasco Laboratories", "Procter & Gamble","Proteon Therapeutics", "Purdue Pharma", "Quark", "Regeneron", "RespireRx", "Sarepta Therapeutics", "Sheffield","Spectrum", "Tec Laboratories", "Titan", "Trevena Inc", "Ultragenyx", "Upsher-Smith", "Ventria Bioscience","Vertex", "Viatris", "West Pharmaceutical Services", "Alza", "Allergan, Inc.", "Amylin", "ARIAD", "Barr","Biolex", "Bradley", "CancerVax", "Cephalon", "CoTherix", "Cubist", "Cutter Laboratories", "DNAPrint Genomics","Epix", "Forest Laboratories", "Genta", "ImClone Systems", "ISTA", "King", "KV", "Leiner Health Products","Martek Biosciences", "Massengill", "Miles Laboratories", "Mylan", "Naurex", "Nereus", "Nuvelo", "Ortho","OSI", "Parke-Davis", "Repros Therapeutics", "Qualitest", "Rib-X", "Schering-Plough", "Smith, Kline & French","Sterling Drug", "Tanox", "TAP", "Trubion", "Upjohn", "Verus", "ViroPharma", "Wyeth", "Zonite")
+
+
+data2<-data
+#add column listing if the manufacturer is US based (comparing w/ list above)
+data2$US_Based <- ifelse(data2$Mftr_Name %in% us_companies, "Yes", "No")
+
+#add column checking if the drug is generic or brand name
+data2$Drug_Type <- ifelse(data2$Brnd_Name != data$Gnrc_Name, "Brand", "Generic")
+
+
+#apply log transformation for variance/normality concerns
+data2<- data2 %>% mutate(across(where(is.numeric), ~ log(. + 1)))
+
+
+#view data summary
+# head(data2)
+# str(data2)
+
+```
+
+# Introduction
+
+Row
+-------------------------------------
+
+Medicaid Spending by Drug 2018 to 2022
+
+The following statement is from Centers for Medicare & Medicaid Services which is who published this data
+
+"The Medicaid by Drug dataset presents information on spending for covered outpatient drugs prescribed to beneficiaries enrolled in Medicaid by physicians and other healthcare professionals. 
+
+The dataset focuses on average spending per dosage unit and change in average spending per dosage unit over time. Units refer to the drug unit in the lowest dispensable amount. It also includes spending information for manufacturer(s) of the drugs as well as consumer-friendly information of drug uses and clinical indications.
+
+Drug spending metrics for Medicaid represent the total amount reimbursed by both Medicaid and non-Medicaid entities to pharmacies for the drug. Medicaid drug spending contains both the Federal and State reimbursement and is inclusive of any applicable dispensing fees. In addition, this total is not reduced or affected by Medicaid rebates paid to the states."
+
+
+
+
+Row 
+-------------------------------------
+
+### Data Dictionary
+
+https://drive.google.com/drive/folders/1Y9TCKXrM5Ejq30c_S12gf5abQZnAzCS_?usp=sharing
+
+
+- **Brnd_Name**: Brand name of the drug.
+- **Gnrc_Name**: Generic name of the drug.
+- **Tot_Mftr**: Total number of manufacturers for the drug.
+- **Mftr_Name**: Name of the manufacturer.
+- **Tot_Spndng_2018**: Total spending on the drug in 2018.
+- **Tot_Dsg_Unts_2018**: Total dosage units distributed in 2018.
+- **Tot_Clms_2018**: Total claims made for the drug in 2018.
+- **Tot_Spndng_2019**: Total spending on the drug in 2019.
+- **Tot_Dsg_Unts_2019**: Total dosage units distributed in 2019.
+- **Tot_Clms_2019**: Total claims made for the drug in 2019.
+- **Tot_Spndng_2020**: Total spending on the drug in 2020.
+- **Tot_Dsg_Unts_2020**: Total dosage units distributed in 2020.
+- **Tot_Clms_2020**: Total claims made for the drug in 2020.
+- **Tot_Spndng_2021**: Total spending on the drug in 2021.
+- **Tot_Dsg_Unts_2021**: Total dosage units distributed in 2021.
+- **Tot_Clms_2021**: Total claims made for the drug in 2021.
+- **Tot_Spndng_2022**: Total spending on the drug in 2022.
+- **Tot_Dsg_Unts_2022**: Total dosage units distributed in 2022.
+- **Tot_Clms_2022**: Total claims made for the drug in 2022.
+- **Chg_Avg_Spnd_Per_Dsg_Unt_21_22**: Change in average spending per dosage unit from 2021 to 2022.
+- **CAGR_Avg_Spnd_Per_Dsg_Unt_18_22**: Compound annual growth rate for average spending per dosage unit from 2018 to 2022.
+- **Tot_Spndng_ALL_YEARS**: Total spending on the drug across all years.
+- **Tot_Clms_ALL_YEARS**: Total claims made for the drug across all years.
+- **Tot_Dsg_Unts_ALL_YEARS**: Total dosage units distributed across all years.
+- **Multiple_Mftr**: Indicator for drugs with multiple manufacturers.
+- **US_Based**: Indicator if the manufacturer is based in the US.
+- **Drug_Type**: Classification of the drug type (e.g., generic or brand name)
+
+
+# MLR
+
+Column {.tabset}
+------------------------------------
+
+### Model Selection
+```{r, echo=FALSE}
+
+# References: Lecture 14 and CMDA 3654 Lecture 13
+
+#read in data w/ just the original variables, and select numeric only
+mlrData <- read.csv("data.csv")%>% na.omit() %>%
+          select_if(is.numeric)  %>%
+        mutate(log(. + 1))
+
+#remove listed outliers from data
+mlrData = mlrData[, -grep("Outlier_Flag", names(mlrData))]
+
+#null model
+modfit0<-lm(Tot_Clms_2022~1, data=mlrData)
+
+#full model
+modfitFull<-lm(Tot_Clms_2022~ ., data=mlrData)
+
+#stepwise regression to find which predictor variables are most relevant
+modfitBest <- stepAIC(modfit0, scope = list(lower = modfit0, 
+                                            upper =modfitFull),
+                      direction = "both",trace = 0 )
+
+#print out the variables in the best regression along w/ coefficients
+coefficients(modfitBest)
+
+
+
+```
+The multiple linear regression is fitted on a log transformation of all variables to improve normality and variance concerns. In order to identify the most optimal predictors for claim count in 2022, stepwise regression is used. This process starts from the null model and adds/removes variables to reach the combination of variables that best fit the data. The results show that the best variables to include in the model are Total Claims, Spending, and Dosage Units for previous years, along with number of manufacturers and outlier flags. 
+
+### Final Model
+```{r, echo=FALSE}
+
+#split the data into 70/30 training testing samples
+index <- sample(seq_len(nrow(mlrData)), size = 0.7 * nrow(data))
+
+#assign 70% to training, remaining 30% for testing
+train <- mlrData[index, ]
+test <- mlrData[-index, ]
+
+
+#make predictions on test set using best model
+mlrPred <- predict(modfitBest, newdata = test)
+
+#calculate RMSE
+mlrRMSE <- sqrt(mean((test$Tot_Clms_2022 - mlrPred)^2))
+
+
+#output results       
+summary(modfitBest)
+print(paste("RMSE: ", mlrRMSE))
+
+```
+
+The final model has a statistically significant p-value of less than 2.2e-16, and an R-squared of 0.9998, indicating the model fits 99.98% of the data. The RMSE value of 0.046 is also very low, indicating that the predicted values of the model were very close to the actual results in the testing set. 
+
+The regression equation is:
+
+Tot_Clms_2022 = 0.390305(Tot_Clms_2021) + 0.968748(Tot_Spndng_2022) 
+    -1.023689(Avg_Spnd_Per_Clm_2022) + 0.021380(Tot_Dsg_Unts_2022) + 0.086763(Avg_Spnd_Per_Dsg_Unt_Wghtd_2022) 
+    -0.018260(Tot_Dsg_Unts_2021) + 0.007007(Avg_Spnd_Per_Clm_2018) -0.075123(Tot_Clms_2019) 
+    -0.365477(Tot_Spndng_2021) + 0.391886Avg_Spnd_Per_Clm_2021) -0.044258(Avg_Spnd_Per_Dsg_Unt_Wghtd_2021) 
+     -0.026432(Chg_Avg_Spnd_Per_Dsg_Unt_21_22) +  0.600235(Tot_Clms_2020) -0.576232(Tot_Spndng_2020) + 
+    0.618370(Avg_Spnd_Per_Clm_2020)  -0.109748(CAGR_Avg_Spnd_Per_Dsg_Unt_18_22) 
+    -0.028563(Avg_Spnd_Per_Dsg_Unt_Wghtd_2020) -0.019831(Tot_Dsg_Unts_2020) +  0.030375(Tot_Dsg_Unts_2018) + 
+    0.005607(Tot_Mftr) -0.010184(Tot_Dsg_Unts_2019) -0.008039(Avg_Spnd_Per_Dsg_Unt_Wghtd_2019) + 
+    0.081093(Tot_Spndng_2019) -0.078954(Avg_Spnd_Per_Clm_2019) -0.029368(Tot_Spndng_2018) + 0.027944   
+
+Of the variables included in the model, all are statistically significant at alpha=0.05. As a general trend from the model results, the most influential factors in predicting the amount of claims in future years is the previous years claims, spending, and dosage units. 
+ 
+ 
+
+
+
+
+### Residuals vs. Fitted
+
+After applying the log transformation, the residuals vs. fitted plot is more evenly distributed. There are a few points with larger residual values, but the majority of residuals center around zero. 
+
+
+```{r, echo = FALSE}
+
+
+# Residuals vs Fitted Plot
+plot(modfitBest$fitted.values, modfitBest$residuals, 
+     xlab = "Fitted Values", ylab = "Residuals",
+     main = "Residuals vs Fitted")
+abline(h = 0, col = "red", lwd=3)
+
+
+```
+
+
+
+
+### Normal Q-Q Plot
+This normal Q-Q plot is the result of a log transformation of the dataset, which had the greatest improvement on normality out of several other transformations. The plot shows that the majority of points at the center align with the red line. This indicates a mostly normal distribution, however there are some deviations at either end of the graph indicating there may still be some skewness.
+```{r, echo=FALSE, fig.height=5}
+
+
+# Normal Q-Q Plot
+qqnorm(modfitBest$residuals, main = "Normal Q-Q Plot")
+qqline(modfitBest$residuals, col = "red", lwd=3)
+
+```
+
+
+
+
+### Residuals vs. Leverage Plot
+```{r, echo=FALSE}
+
+# Residuals vs Leverage Plot
+plot(modfitBest, which = 5, lwd=3)
+```
+
+Although all marked outliers were removed, the residuals vs. leverage plot shows that observations 4584, 4585, and 9419 are all highly influential points. 
+
+### Predicted vs. Actual Plot
+```{r, echo=FALSE}
+# Predicted vs Actual Plot
+plot(test$Tot_Clms_2022, mlrPred, 
+     xlab = "Actual Values", ylab = "Predicted Values", 
+     main = "Predicted vs Actual")
+abline(0, 1, col = "red")  # 45-degree line
+```
+
+The Predicted vs. Actual plot shows that the the predicted and actual Medicaid claim count values of the MLR model are almost identical. This indicates that the model has high accuracy.
+
+
+
+
+Column 
+------------------------------------
+
+### Text
+
+Research Question: Can we predict the total number of medicaid claims for 2022 based on previous years
+
+
+Conclusion:
+Overall, the MLR analysis shows that the Medicaid claim counts can be predicted for the year 2022 with high accuracy. The R2 value of our model is 0.9998, and the RMSE is 0.0446, indicating high model performance. From our analysis, the most important predictors are the previous years' claim counts, spending, and dosage units. 
+
+
+# Ridge Regression
+
+Row {.tabset}
+-------------------------------------
+    
+### Model
+    
+```{r, echo = FALSE}
+#y variable set to total spending of 2022
+y = data$Tot_Spndng_2022
+
+#x variable set to total spending of previous years
+x = as.matrix(data[, c("Tot_Spndng_2018", "Tot_Spndng_2019", "Tot_Spndng_2020", "Tot_Spndng_2021"
+)])
+
+#ridge model
+ridge = glmnet(x, y, alpha = 0)
+
+#find best lambda
+ridge_lambda = cv.glmnet(x, y, alpha = 0)
+best_lambda = ridge_lambda$lambda.min
+
+ridge_best = glmnet(x, y, alpha = 0, lambda = best_lambda)
+
+#find predictions
+yhat = predict(ridge, s = best_lambda, newx = x)
+
+#find SST and SSE then find R^2
+SST <- sum((y - mean(y))^2)
+SSE <- sum((yhat - y)^2)
+r_sq <- 1 - SSE/SST
+
+plot(ridge_lambda)
+
+```
+
+### Coefficient Plot
+
+```{r, echo = FALSE}
+plot(ridge, xvar = "lambda")
+```
+
+
+   
+Row
+-------------------------------------
+    
+    
+### Chart 3
+
+Research Question: Can we use the previous years amount spent to predict the amount spent in 2022?
+
+Conclusion: Our model has an R_squared of 
+```{r, echo = FALSE}
+r_sq
+```
+The best lambda for the regression was
+```{r, echo = FALSE}
+best_lambda
+```
+
+The following is a table of the coefficients of our model
+```{r, echo = FALSE}
+Statistic = as.data.frame("Variable Name", "Value")
+names = c("(Intercept)", "2018 Spending", "2019 Spending", "2020 Spending", "2021 Spending")
+  Value = c("-3.447282e+05", "-2.076970e-01", "7.460894e-02", "4.389263e-01", "7.726332e-01")
+
+resultsTable <- data.frame(
+  Variables = names,
+  Values = Value)
+
+#table output
+kable(resultsTable, caption="Ridge Regression Coefficients", 
+      format="pandoc")
+```
+
+The Ridge Regression model is able to predict 2022 Medicaid spending based on the spending from previous years. With an R-squared of 0.953 this model has little varience between the true values and what is being predicted by the model. The coefficients help us interprate how the previous years affect the spending in 2022. The spending in 2021 has the largest impact of 0.7726 and 2020 being the next largest with 0.4389, 2019 has a smaller impact with a coefficient of 0.0746. 2018 is different than the rest of the coefficients because it is the only one with negative impact excluding the intercept. 
+
+
+# LOESS
+
+Column {.tabset}
+------------------------------------
+
+### Correlation Matrix
+
+```{r, echo = FALSE}
+
+
+#subset of numeric spending variables for all years
+corVariables <- data2[, c("Tot_Spndng_ALL_YEARS", "Tot_Clms_ALL_YEARS",
+                    "Avg_Spnd_Per_Clm_ALL_YEARS","Tot_Dsg_Unts_ALL_YEARS", "Avg_Spnd_Per_Dsg_Unt_Wghtd_ALL_YEARS")]
+
+
+#calculate correlation matrix for selected variables and display
+ggpairs(corVariables,
+        title = "Correlation Matrix of Medicaid Spending",
+        upper = list(continuous = "smooth"),
+        lower = list(continuous = "cor"),
+        diag = list(continuous = "blank")) + theme_bw()
+
+
+
+
+```
+
+### Correlation Matrix Text
+
+In order to investigate what variables are associated with one another, a correlation matrix is used. Based on the results, Total Claims and Total Dosage Units have the highest correlation of 0.853. The claims data represents the volume of prescriptions filled, while the dosage units represents the concentration of the medication and the quantities dispensed per prescription. This relationship can be investigated further through comparing trends for both generic and brand name drugs. 
+
+
+### LOESS Degree Comparison
+
+```{r, echo = FALSE}
+
+# References: Lecture 11, Group Exercise 2
+
+#make subsets of data based on each drug type
+generic <- subset(data2, Drug_Type == "Generic")
+brand <- subset(data2, Drug_Type == "Brand")
+
+
+#empty vectors to hold MSE values for each polynomial fit
+MSEGeneric <- numeric(2)
+MSEBrand <- numeric(2)
+
+
+#fit with degrees 1-2 to see which has lowest MSE values
+for (degree in 1:2) 
+{
+
+  # Polynomial regression for generic drugs
+  modelGeneric <- lm(Tot_Dsg_Unts_ALL_YEARS ~ 
+                    poly(Tot_Clms_ALL_YEARS, degree, raw = TRUE), 
+                    data = generic)
+  predGeneric <- predict(modelGeneric)
+  MSEGeneric[degree] <- mean((generic$Tot_Dsg_Unts_ALL_YEARS - predGeneric)^2)
+  
+  # Polynomial regression for brand drugs
+  modelBrand <- lm(Tot_Dsg_Unts_ALL_YEARS ~ poly(Tot_Clms_ALL_YEARS, 
+                                          degree, raw = TRUE), data = brand)
+  predBrand <- predict(modelBrand)
+  MSEBrand[degree] <- mean((brand$Tot_Dsg_Unts_ALL_YEARS - predBrand)^2)
+}
+
+#combine MSE results in dataframe
+MSETable <- data.frame(
+  Degree = 1:2,
+  MSE_Generic = MSEGeneric,
+  MSE_Brand = MSEBrand)
+
+#print MSE as a kable table
+kable(MSETable, caption = "MSE Values for Degrees 1 and 2", 
+      format="pandoc", digit=4)
+
+```
+
+In order to determine which polynomial is best to use for a LOESS model, both the generic and brand name drug subsets of the Medicaid claims data were fit using degree=1 and degree=2. The table above shows the resulting MSE values of each fit. The results show that degree=2 better fits the data due to lower MSE values for both drug type subsets. 
+
+
+### LOESS Span Comparison
+    
+```{r, echo = FALSE}
+
+#span values from group exercise 2
+spanValues <- seq(0.25, 0.75, by = 0.05)
+
+#vectors to hold MSE results for each drug type
+MSEGeneric <- numeric(length(spanValues))
+MSEBrand <- numeric(length(spanValues))
+
+#loop through each span value and calculate MSE
+for (i in 1:length(spanValues)) 
+{
+  
+  #the best polynomial from previous output is 2, so degree 2 used below
+  
+
+  #LOESS for total claims vs spending (generic)
+  fit1 <- loess(Tot_Dsg_Unts_ALL_YEARS ~ Tot_Clms_ALL_YEARS, 
+                      data = generic, span = spanValues[i], degree = 2)
+  pred1 <- predict(fit1) #get predictions
+  MSE1 <- mean((generic$Tot_Dsg_Unts_ALL_YEARS - pred1)^2) #calculate MSE
+  MSEGeneric[i] <- MSE1 #update vector
+  
+  
+ 
+  #LOESS for total claims vs spending (brand)
+  fit2 <- loess(Tot_Dsg_Unts_ALL_YEARS ~ Tot_Clms_ALL_YEARS, data = brand, 
+                span = spanValues[i], degree = 2)
+  
+  pred2 <- predict(fit2)
+  MSE2 <- mean((brand$Tot_Dsg_Unts_ALL_YEARS - pred2)^2)
+  MSEBrand[i] <- MSE2
+  
+}
+
+# Combine results into a data frame 
+resultsTable <- data.frame(
+  Span = spanValues,
+  MSE_Generic = MSEGeneric,
+  MSE_Brand = MSEBrand)
+
+# Output MSEs for all spans
+kable(resultsTable, caption="MSE Values for Generic and Brand Drugs", 
+      format="pandoc", digit=4)
+
+```
+
+In order to determine the best span, each of the 3 categories are fit using span values in range 0.25-0.75 (as suggested for group exercise 2). The output shows that span values 0.25 and 0.3 both have the lowest resulting MSE value. Based on this, span=0.25 will be used for the LOESS fit.
+
+
+
+### Generic and Brand Name Drug LOESS Fit
+```{r, echo=FALSE}
+
+#fit all 3 data subsets using degree=2, span=0.25 based on previous outputs
+genericLoess <- loess(Tot_Dsg_Unts_ALL_YEARS ~ Tot_Clms_ALL_YEARS, 
+                      data = generic, span = 0.25, degree = 2)
+
+brandLoess <- loess(Tot_Dsg_Unts_ALL_YEARS ~ Tot_Clms_ALL_YEARS, 
+                    data = brand, span = 0.25, degree = 2)
+
+
+
+#get the summaries for both
+genericSummary<- summary(genericLoess)
+brandSummary<-summary(brandLoess)
+
+#put the summary info into a data frame
+summaryTable <- data.frame(
+  Group = c("Generic Drugs", "Brand Drugs"),
+  Span = c(0.25, 0.25),
+  Degree = c(2, 2),
+  Number_of_Observations = c(genericSummary$n, brandSummary$n),
+  Equivalent_Number_of_Parameters = c(genericSummary$enp, brandSummary$enp),
+  Residual_Standard_Error = c(genericSummary$s, brandSummary$s),
+  Trace_of_Smoother_Matrix=c(genericSummary$one.delta, brandSummary$one.delta))
+
+# Output the table
+kable(summaryTable,
+      caption = "Summary of LOESS Fit for Generic and Brand Name Drugs",
+      format="pandoc")
+```
+
+Both the generic and brand name drug subsets were fit using LOESS with span 0.25 and degree=2. The table above shows that there are significantly more brand name drugs in the dataset (2728) compared to generic drugs (578). The generic drug subset has a lower residual standard error, indicating a slightly better fit compared to the brand name drug subset. 
+
+
+
+### Generic Drug LOESS Chart
+
+The graph above shows the relationship between dosage units and claims for just the generic drugs. As the total claims increase, so do the total dosage units. At lower claim counts, the data is slightly more spread out, and this variance decreases slightly at higher claim counts. One possible explanation is that higher demand generic medications may have more standardized prescribed dosage levels and quantities, whereas there might be more variation with less commonly used medications. 
+
+The degree 1 and degree 2 fits are very similar, however the degree 2 LOESS model fits the data slightly better.
+
+
+
+```{r, echo=FALSE, fig.height=4}
+
+par(mfrow=c(1,2))
+
+#plot LOESS for Generic Drugs (degree 1 and degree 2)
+genericLoess <- ggplot(generic, aes(x = Tot_Clms_ALL_YEARS, y = Tot_Dsg_Unts_ALL_YEARS)) +
+  geom_point(alpha = 0.5) +
+  #LOESS degree 1 in red
+  geom_smooth(method = "loess", span = 0.25, se = FALSE,
+              method.args = list(degree = 1), aes(color = "degree 1")) +
+  #LOESS degree 2 in blue
+  geom_smooth(method = "loess", span = 0.25, se = FALSE,
+              method.args = list(degree = 2), aes(color = "degree 2")) +
+  scale_color_manual(name = "Degree",
+                     breaks = c("degree 1", "degree 2"),
+                     values = c("degree 1" = "red", "degree 2" = "blue")) +
+  labs(title = paste("LOESS Fit for Generic Drugs, Span =", 0.25),
+       x = "Total Claims",
+       y = "Total Dosage Units") +
+  theme(legend.position = "bottom") +theme_bw()
+
+
+ggplotly(genericLoess)
+
+```
+
+ 
+ 
+### Brand Name Drug LOESS Chart
+
+The second graph shows the dosage units and claims for the brand name drugs. The dataset contains far more instances of brand name drugs than generic, which is reflected in the points on the graph. Compared to the generic drugs, the data is more evenly distributed across all claim count levels. Although the degree 1 and 2 models are very similar, degree 2 LOESS seems to fit the data better. 
+
+
+```{r, echo=FALSE, fig.height=4}
+#plot LOESS for Brand Drugs (degree 1 and degree 2)
+brandLoess <- ggplot(brand, aes(x = Tot_Clms_ALL_YEARS, y = Tot_Dsg_Unts_ALL_YEARS)) +
+  geom_point(alpha = 0.5) +
+  #LOESS degree 1 in red
+  geom_smooth(method = "loess", span = 0.25, se = FALSE,
+              method.args = list(degree = 1), aes(color = "degree 1")) +
+  #LOESS degree 2 in blue
+  geom_smooth(method = "loess", span = 0.25, se = FALSE,
+              method.args = list(degree = 2), aes(color = "degree 2")) +
+  scale_color_manual(name = "Degree",
+                     breaks = c("degree 1", "degree 2"),
+                     values = c("degree 1" = "red", "degree 2" = "blue")) +
+  labs(title = paste("LOESS Fit for Brand Drugs, Span =", 0.25),
+       x = "Total Claims",
+       y = "Total Dosage Units") +
+  theme(legend.position = "bottom") +theme_bw()
+
+
+ggplotly(brandLoess)
+
+```
+
+
+
+  
+
+Column {.tabset}
+------------------------------------
+
+### Text
+
+Research Question: What is the relationship between dosage units and claims for both brand name and generic drugs?
+
+Conclusion:
+
+Both LOESS graphs show that an increase in claims is accompanied by an increase in dosage units for both generic and brand name drugs. Both drug subsets have approximately the same rate of growth. Comparing the two, the brand name drug data is more evenly distributed, while the generic data at higher claim counts has less spread.
+
+Dosage units represent the concentration and quantities of medication dispensed per prescription filled. The trends show that generic medications, especially at higher demand, are may be prescribed in bulk or at high standardized doses. In comparison, brand name drugs may have more variance in prescription due to more dosage levels, or prescription regulations. 
+
+
+
+
+
+# kNN
+
+Row {.tabset}
+-------------------------------------
+
+### Plotted Data
+```{r, echo = FALSE, fig.width = 8, fig.height = 5}
+set.seed(123)
+#pull only the variables we are using
+knnData = data[, c(34,35)]
+
+#make the multiple manfactures classifcation variable
+knnData$Multiple_Mftr <- ifelse(data$Tot_Mftr > 1, TRUE, FALSE)
+
+#divide data into testing and training
+index = sample(1:nrow(knnData), round(nrow(knnData) * 0.7))
+training_data = knnData[index, ]
+testing_data = knnData[-index, ]
+
+training_features = training_data[, 1:2]
+testing_features = testing_data[,1:2]
+
+training_classes = training_data$Multiple_Mftr
+training_classes = factor(training_classes, levels = c("TRUE", "FALSE"))
+
+testing_classes = testing_data$Multiple_Mftr
+testing_classes = factor(testing_classes, levels = c("TRUE", "FALSE"))
+
+
+#making knn model
+knn_model <- knn(train = training_features, 
+                   test = testing_features, 
+                   cl = training_classes, 
+                   k = 3)
+
+p1 <- ggplot(training_data, aes(x = Tot_Clms_ALL_YEARS, y = Tot_Spndng_ALL_YEARS, color = Multiple_Mftr)) + geom_point() + theme_bw() +
+geom_point(data = testing_data, aes(x = Tot_Clms_ALL_YEARS, y = Tot_Spndng_ALL_YEARS), color = "black", pch = 5, size = 3) + labs(x = "Total Claims 2018-2022", y = "Total Spending (USD) 2018-2022", color = "Multiple Manufactures")
+ggplotly(p1)
+```
+
+    
+### Prediction Table
+    
+```{r, echo = FALSE}
+library(caret)
+confusionMatrix(data = knn_model, reference = testing_classes)
+```
+
+
+
+
+Row
+-------------------------------------
+    
+    
+### Text
+
+Research Question: Can we use the medicaid spending and claims over 2018-2022 to determine if there are multiple manufactures of a medication?
+
+
+The kNN classification model, developed to predict whether a medication has multiple manufactures based on the total spending and total claims from the years 2018 to 2022, achieved a success rate of 70.26% on the testing set. This success rate is better than the no information success rate of 63.61%. The model has a p-value of (5.819e-6) near zero which tells us that our model's ability to make predictions is significant. The model's sensitivity of 49.31% suggest that it has a not as good ability in correctly identifying medications with multiple manufactures, but the specificity of 82.25% suggest that our model has a much ability in identifying medications that only have one manufacture. With this model we expect a misclassifcation rate of around 29.74%
+
+
+# Naive Bayes
+
+Column {.tabset}
+------------------------------------
+
+### Proportion of Generic and Brand Name Drugs in Dataset
+
+```{r, echo=FALSE}
+
+# References: Lecture 05, Group Exercise 1
+
+#split the data into 70/30 training testing samples
+index <- sample(seq_len(nrow(data2)), size = 0.7 * nrow(data))
+
+#assign 70% to training, remaining 30% for testing
+train <- data2[index, ]
+test <- data2[-index, ]
+
+#training/testing data for drug type variable
+train_y <- train$Drug_Type
+test_y <- test$Drug_Type
+
+#counts and proportions of drug type
+H <- xtabs(~ Drug_Type, data = data2)
+prior <- prop.table(H)
+
+#get the proportions of each drug type in training testing data
+propTrain <- prop.table(table(train_y))
+propTest <- prop.table(table(test_y))
+
+
+#format as dataframe
+propTables <- data.frame(
+  Category = names(prior),
+  Prior = as.numeric(prior),
+  Train = as.numeric(propTrain),
+  Test = as.numeric(propTest))
+
+#output proportions of brand and generic drug in each dataset
+kable(propTables, caption = 
+        "Brand vs. Generic Drugs in Prior, Training, and Testing Sets", 
+      format = "pandoc", digit=4)
+
+
+#train the model w/laplace smoothing
+nbModel <- naiveBayes(train, train_y, laplace=1)
+
+#get the predictions from testing data
+yhat<-predict(nbModel, test)
+```
+
+
+The output shows that roughly 82.5% of the data represents brand name drugs, while around 17.5% represents generic drugs. Although a more even split would be ideal for a naive bayes model, this is the data distribution available in the Medicaid claims dataset. 
+
+
+   
+    
+
+
+### Overall Accuracy
+```{r, echo=FALSE}
+
+#simpler confusion matrix
+myTab<-table(yhat, test_y)
+
+#proportion of correct predictions
+propCorrect<-(myTab[2, 2] / sum(myTab[, 2]))
+
+#get the misclassification rate
+misclass<-(sum(myTab)-sum(diag(myTab)))/sum(myTab)
+
+#put classification stats in table
+myTab2 <- data.frame(
+  Proportion_Correct = propCorrect,
+  Missclassification = misclass)
+
+#output classification accuraty table
+kable((myTab2), caption = "Classification Accuracy",format="pandoc", digit=4)
+
+```
+
+Overall, the Naive Bayes model of generic and brand name drugs has a classification accuracy of around 0.85, with a misclassification rate of around 0.16. This indicates reasonable accuracy, although significant improvements can still be made to improve the classification rate. 
+
+
+### Confusion Matrix
+    
+```{r, echo = FALSE}
+
+
+#output  confusion matrix
+crosstable<-CrossTable(yhat, test_y, prop.chisq = FALSE, 
+                prop.t = FALSE,prop.r=FALSE, 
+                dnn = c("Predicted", "Actual"))
+```
+The confusion matrix above displays the results comparing the predicted drug type classifications of the test set using the Naive Bayes model. The model was able to correctly classify 83.4% of brand name drugs, and 85% of generic drugs. Exactly 15% of the generic drugs were falsely classified as brand name, and 16.6% of brand name drugs were classified as generic. One explanation for the misclassifications is the imbalance in the dataset. The majority of the observations are brand name drugs, with only ~ 17.5% of the data representing generics. With increased Medicaid claims data on generic drugs, there may be an increase in model accuracy. 
+
+
+    
+    
+
+### ROC Curve
+
+The ROC curve above shows the classification performance of our model on the testing dataset. The plotted line approaches the top left corner of the model, indicating high sensitivity and high specificity. There is also a large area under the curve, however we still see room for improvement in terms of increasing sensitivity and specificity values. Again, this could be improved with more data on generic drugs. 
+
+
+```{r, echo=FALSE, fig.height = 5}
+#get predicted probabilities of each drug type
+predicted_probs1 <- predict(nbModel,test, type = "raw")[, "Generic"]
+
+#create ROC curve
+rocPlot1 <- roc(test_y, predicted_probs1, 
+               levels= c("Brand", "Generic"))
+
+#plot roc
+plot(rocPlot1,col = "red", lwd = 2, 
+     main ="ROC Curve for Naive Bayes Drug Type Classification")
+
+
+```
+
+
+
+
+
+
+Column {.tabset}
+------------------------------------
+
+Research Question: Can we predict if a drug is brand name or generic based on the Medicaid spending trends?
+
+
+Conclusion:
+The analysis shows that the Naive Bayes model was able to correctly classify ~ 85% of brand name and generic drugs. Based on the current performance, the model is able to predict drug type from Medicaid spending trends with reasonable accuracy. With more observations on generic drugs to add to the Medicaid claims dataset, the model accuracy could be significantly improved. 
+
+
+
+
+# Logistic Regression
+
+Column {.tabset}
+-------------------------------------
+
+### Data Plotted
+    
+```{r, echo = FALSE, fig.width = 8, fig.height = 4}
+# Convert Multiple_Mftr to a factor
+data$Multiple_Mftr <- factor(data$Multiple_Mftr, levels = c(0, 1), labels = c("No", "Yes"))
+
+# plot
+plot = ggplot(data, aes(x = Tot_Clms_2022, y = Tot_Spndng_2022, color = Multiple_Mftr)) + 
+  geom_point() + 
+  labs(
+    x = "Total Claims",
+    y = "Total Spending (USD)",
+    color = "Multiple Manufacturers"
+  ) + 
+  scale_color_manual(values = c("red", "blue")) +
+  theme_bw()
+ggplotly(plot)
+
+```
+    
+### ANOVA and Predictions
+    
+```{r, echo = FALSE}
+data$Multiple_Mftr = ifelse(data$Tot_Mftr > 1, 1, 0)
+
+
+index = sample(1:nrow(data), round(nrow(data) * 0.7))
+training_data = data[index, ]
+testing_data = data[-index, ]
+
+#model
+null_model = glm(Multiple_Mftr ~ 1, family="binomial", data = data)
+model = glm(Multiple_Mftr ~ Tot_Clms_2022 + Tot_Spndng_2022, family="binomial", data = data)
+ANOVA = anova(null_model, model, test = "LRT")
+ANOVA
+```
+
+```{r, echo = FALSE}
+#find predictions 
+predictions = predict(model, testing_data, type="response")
+Predictions = ifelse(predictions > 0.35, "Yes", "No")
+table(Predictions, testing_data$Multiple_Mftr)
+
+```
+When we use the model to make predictions on the testing data using a threshold of 0.35, the model is able to predict 593 of the true no's correctly and 33 of the true no's wrong and 172 of the true yes's correctly with 194 of them wrong. This gives us an overall success rate of 77.1% which is good and much better to help make predictions compared to if we didn't use this model. The difference between the model correctly prediction yes's vs. no's is large with a 94.7% success rate when predicting a No on the true no's, but only a 47.% success rate for the model predicting a yes on the true yes's. This information could come in handy when it comes to using this model to make predictions and you can have more confidence in getting a true no compared to a true yes.
+
+### Prediction Plot 1
+```{r, echo = FALSE, fig.width = 8, fig.height = 5}
+pihat_multi_Mftr = predict(model, type = "response")
+etahat_multi_Mftr = predict(model, type = "link")
+
+plot = ggplot(data, aes(x = etahat_multi_Mftr, y = Multiple_Mftr)) +
+geom_point(aes(color = factor(Multiple_Mftr)), position = position_jitter(height = 0.03, width = 0), size = 0.5) +
+geom_line(aes(x = etahat_multi_Mftr, y = pihat_multi_Mftr)) +
+labs(x = "eta", y = "pi") +
+scale_color_manual(values = c("red", "blue"), name = "Multiple Manufactures", labels = c("no", "yes")) +
+geom_hline(yintercept = 0.35, linetype = "dashed") + geom_vline(xintercept = log(0.35/0.65), linetype = "dashed") +
+scale_y_continuous(breaks = seq(0, 1, by = 0.1)) + theme_bw()
+
+ggplotly(plot)
+
+```
+
+### Prediction Plot 2
+```{r, echo = FALSE, fig.width = 8, fig.height = 5}
+mydecision = factor(if_else(etahat_multi_Mftr >= log(0.35/0.65), "Yes", "No"))
+logData <- data.frame(data, mydecision)
+plot = ggplot(logData, aes(x = Tot_Clms_2022, y = Tot_Spndng_2022, color = mydecision)) + geom_point() +
+geom_abline(slope = -coef(model)[2]/coef(model)[3],
+intercept = (log(.35/.65) - coef(model)[1] ) / coef(model)[3] ) + labs(
+    x = "Total Claims",
+    y = "Total Spending (USD)"
+  ) + scale_color_manual(values = c("red", "blue"), name = "Multiple Manufactures", labels = c("No", "Yes")) + theme_bw()
+
+ggplotly(plot)
+
+```
+ 
+
+
+
+Column
+-------------------------------------
+    
+    
+### Text
+
+
+Research Question: Can the total spending and claims for drugs using medicaid during the year 2022 help us predict if a medication is made by multiple manufactures?
+
+Conclusion: Using the data to make a Logistic Regression model on the testing data we were able to determine if a medication has multiple manufactures with a success rate of 75.6% on our testing data with a threshold of 0.35. The model has the following coefficients
+```{r, echo = FALSE}
+Statistic = as.data.frame("Variable Name", "Value")
+names = c("Intercept", "Total Claims in 2022", "Total Spending 2022")
+  Value = c("-7.777877e-01", "7.574508e-06", "-2.548977e-08")
+
+resultsTable <- data.frame(
+  Variables = names,
+  Values = Value)
+
+kable(resultsTable, caption="Logistic Regression Coefficients", 
+      format="pandoc")
+```
+
+
+y = -0.7777877 + 7.574508e-06x₁ - 2.548977e-08x₂
+
+
+a misclassification error of
+```{r, echo = FALSE}
+cv.glm(data = data, glmfit = model, K = 10)$delta[1]
+```
+and a p-value of 
+```{r, echo = FALSE}
+ANOVA$`Pr(>Chi)`[2]
+```
+Since this model is able to make predictions with a low misclassification error rate and has a p-value of near zero We are able to confidently say that this model can be used to predict if a medication has multiple manufactures based on the spending and claims data from 2022. This model is most likely only good to use until we have data for 2023 because that will give us more up to date information compared to the 2022 data we are using for the model. 
+
+
+
